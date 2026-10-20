@@ -10,7 +10,7 @@ const chip = (on: boolean) => ({ font: "500 11px/1 'Fraktion Mono','JetBrains Mo
 const grid = { display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(120px,1fr))", gap: 16, alignItems: "center" } as const;
 
 export default function DecalDemo() {
-  const [palette, setPalette] = useState<PaletteName>("mono");
+  const [palette, setPalette] = useState<PaletteName>("mask");
   const [seed, setSeed] = useState(7);
   const [layout, setLayout] = useState<SheetLayout>("prop");
   return (
@@ -33,7 +33,7 @@ export default function DecalDemo() {
           <p style={{ ...label, margin: "0 8px 0 0" }}>Sheet · {palette}</p>
           {SHEET_LAYOUTS.map(l => <button key={l} onClick={() => setLayout(l)} aria-pressed={l === layout} style={chip(l === layout)}>{l}</button>)}
         </div>
-        <DecalSheet seed={seed} palette={palette} layout={layout} count={layout === "flow" ? 48 : undefined} />
+        <DecalSheet seed={seed} palette={palette} layout={layout} count={layout === "flow" ? 48 : undefined} mask={palette === "mask" ? "white" : undefined} />
       </section>
 
       <section>

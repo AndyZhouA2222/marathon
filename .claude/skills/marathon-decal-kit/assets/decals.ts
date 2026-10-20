@@ -8,6 +8,8 @@ export interface Palette { bg: string; fg: string; muted: string; accents: strin
 
 /** Colors sampled from the reference decal sheets (see references/palette.md). */
 export const PALETTES = {
+  /** pure white on pure black, no greys: masks for 3D software (pair with toSvg({ mask })) */
+  mask: { bg: "#000000", fg: "#FFFFFF", muted: "#FFFFFF", accents: ["#FFFFFF"] },
   /** white decals on black: glyph sheets, NuCaloric atlas, UESC lockup */
   mono: { bg: "#000000", fg: "#FFFFFF", muted: "#8A8A8A", accents: ["#FFFFFF", "#C4C4C4"] },
   /** black decals on white */
@@ -112,16 +114,31 @@ const mix = (a: string, b: string, t: number) =>
   isHex(a) && isHex(b) ? "#" + rgb(a).map((v, i) => Math.round(v + (rgb(b)[i] - v) * t).toString(16).padStart(2, "0")).join("") : a;
 const saturated = (h: string) => { if (!isHex(h)) return false; const v = rgb(h); return Math.max(...v) - Math.min(...v) > 60; };
 
-/** Wraps a decal into a standalone <svg>. `background` paints the palette bg (or a given color). */
 /** Google Fonts stylesheet for the free look-alikes (locally installed originals still win). */
 export const FONT_CSS = "https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@125,400..800&family=Chakra+Petch:wght@500;700&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@300;400;500;600;800&family=Instrument+Serif&display=swap";
 
-export function toSvg(d: Decal, o: { background?: boolean | string; palette?: PaletteInput; padding?: number; scale?: number; embedFonts?: boolean } = {}) {
-  const p = o.padding ?? 0;
+/** "white": white decals on black · "black": black decals on white. */
+export type MaskMode = "white" | "black";
+/** Snaps every #RRGGBB in the markup to pure ink or ground, judged against the palette it was drawn with; drops opacity. */
+function binarize(body: string, p: Palette, mode: MaskMode) {
+  const ink = mode === "white" ? "#FFFFFF" : "#000000", ground = mode === "white" ? "#000000" : "#FFFFFF";
+  return body
+    .replace(/#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?\b/g, m => (contrast(m.slice(0, 7), p.bg) > contrast(m.slice(0, 7), p.fg) ? ink : ground))
+    .replace(/ opacity="[^"]*"/g, "");
+}
+
+/**
+ * Wraps a decal into a standalone <svg>. `background` paints the palette bg (or a given color).
+ * `mask` outputs pure black and white for 3D software; draw the decal with palette "mask" so nothing relies on grey.
+ */
+export function toSvg(d: Decal, o: { background?: boolean | string; palette?: PaletteInput; padding?: number; scale?: number; embedFonts?: boolean; mask?: MaskMode } = {}) {
+  const p = o.padding ?? 0, palette = pal(o.palette);
   const W = d.w + p * 2, H = d.h + p * 2, s = o.scale ?? 1;
-  const bg = o.background ? `<rect width="${W}" height="${H}" fill="${typeof o.background === "string" ? o.background : pal(o.palette).bg}"/>` : "";
+  const fill = typeof o.background === "string" ? o.background : o.mask ? (o.mask === "white" ? "#000000" : "#FFFFFF") : palette.bg;
+  const bg = o.background ? `<rect width="${W}" height="${H}" fill="${fill}"/>` : "";
   const fonts = o.embedFonts ? `<style>@import url('${FONT_CSS.replace(/&/g, "&amp;")}');</style>` : "";
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n(W)} ${n(H)}" width="${n(W * s)}" height="${n(H * s)}">${fonts}${bg}<g transform="translate(${p} ${p})">${d.body}</g></svg>`;
+  const body = o.mask ? binarize(d.body, palette, o.mask) : d.body;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n(W)} ${n(H)}" width="${n(W * s)}" height="${n(H * s)}">${fonts}${bg}<g transform="translate(${p} ${p})">${body}</g></svg>`;
 }
 
 /** Places a decal inside a box (keeps aspect ratio, centered). */
@@ -351,6 +368,7 @@ export function checker(o: Base & { cols?: number; rows?: number; cell?: number;
     b += rect(x0, y0, x1 - x0, y1 - y0, col);
   }
   if (o.globe) { const id = uid("gl"); b = `<clipPath id="${id}"><ellipse cx="${W / 2}" cy="${H / 2}" rx="${W / 2}" ry="${H / 2}"/></clipPath><g clip-path="url(#${id})">${b}</g>`; }
+  else b = `<g shape-rendering="crispEdges">${b}</g>`;
   return { kind: "checker", w: W, h: H, body: b };
 }
 
@@ -363,7 +381,7 @@ export function dither(o: Base & { w?: number; h?: number; cell?: number; color?
     const t = fade === "none" ? 0.5 : fade === "right" ? 1 - x / W : x / W;
     if (r.next() < t * 0.9 + 0.05) b += rect(x, y, c, c, col);
   }
-  return { kind: "dither", w: W, h: H, body: b };
+  return { kind: "dither", w: W, h: H, body: `<g shape-rendering="crispEdges">${b}</g>` };
 }
 
 /** Crosshairs, targets and registration marks. */
@@ -408,7 +426,8 @@ export function blockMark(o: Base & { grid?: number; cell?: number; round?: bool
     b += rect(x * c, y * c, c, c, col, ext);
     if (g - 1 - x !== x) b += rect((g - 1 - x) * c, y * c, c, c, col, ext);
   }
-  return { kind: "blockMark", w: g * c, h: g * c, body: b };
+  // Square cells snap to the pixel grid so neighbours don't leave anti-aliased seams (matters for masks).
+  return { kind: "blockMark", w: g * c, h: g * c, body: o.round ? b : `<g shape-rendering="crispEdges">${b}</g>` };
 }
 
 /** Corner-bracket frame, optionally around another decal. */
@@ -646,7 +665,8 @@ export function thinCode(o: Base & { variant?: "line" | "bracket" | "overbar" | 
   }
   if (v === "overbar") {
     const t = o.text ?? `${str(r, L, 1)}${str(r, LOW, 1)} ${str(r, L, 3)}${r.chance(0.5) ? `   ${str(r, L, 2)}` : ""}`;
-    const boxed = r.chance(0.35), pd = boxed ? s * 0.2 : 0, ink = boxed ? p.muted : col, tw = gw(t), lead = r.chance(0.4) ? s * 0.9 : 0;
+    const boxed = r.chance(0.35), pd = boxed ? s * 0.2 : 0, tw = gw(t), lead = r.chance(0.4) ? s * 0.9 : 0;
+    const ink = boxed ? (contrast(p.muted, p.fg) < 1.5 ? onColor(p.fg) : p.muted) : col;
     const w = lead + tw + s * 1.3 + pd * 2, h = s * 1.2 + pd * 2;
     let b = boxed ? rect(0, 0, w, h, p.fg) : "";
     if (lead) b += rect(pd, pd + s * 0.62, s * 0.5, s * 0.07, ink);
@@ -705,7 +725,10 @@ export function button(o: Base & { variant?: "key" | "toggle" | "led" | "plus" |
   const r = rng(o.seed ?? 1), p = pal(o.palette);
   const v = o.variant ?? r.pick(["key", "toggle", "led", "plus", "pill", "dots", "knob", "socket"] as const);
   const hues = p.accents.filter(saturated);
-  const c = o.color ?? (hues.length ? r.pick(hues) : p.fg), ink = onColor(c), house = p.muted, deep = mix(p.muted, "#000000", 0.55);
+  const c = o.color ?? (hues.length ? r.pick(hues) : p.fg), ink = onColor(c), house = p.muted, deep = mix(p.muted, "#000000", 0.65);
+  // `want` if it stands out on `fill`, else black/white: keeps parts readable when the palette has no greys (mask).
+  const on = (fill: string, want: string) => (contrast(want, fill) < 1.5 ? onColor(fill) : want);
+  const flat = contrast(c, house) < 1.5;
   const mk = (w: number, h: number, body: string): Decal => ({ kind: "button", w, h, body });
   const circ = (cx: number, cy: number, rr: number, fill: string, extra = "") => `<circle cx="${n(cx)}" cy="${n(cy)}" r="${n(rr)}" fill="${fill}"${extra ? " " + extra : ""}/>`;
   const plus = (cx: number, cy: number, s: number, fill: string) => rect(cx - s * 0.13, cy - s / 2, s * 0.26, s, fill) + rect(cx - s / 2, cy - s * 0.13, s, s * 0.26, fill);
@@ -715,15 +738,17 @@ export function button(o: Base & { variant?: "key" | "toggle" | "led" | "plus" |
       return mk(100, 100, rect(0, 0, 100, 100, c, `rx="18"`) + (t === "+" ? plus(50, 50, 52, ink) : text(50, 74, t, { size: 66, fill: ink, font: "display", weight: 700, anchor: "middle" })));
     }
     case "toggle": {
-      const on = r.chance(0.5), mark = onColor(house);
-      return mk(180, 80, rect(0, 0, 180, 80, house, `rx="40"`) + circ(on ? 140 : 40, 40, 30, c) + (on ? rect(30, 30, 20, 20, mark, `rx="3"`) : rect(136, 26, 8, 28, mark, `rx="3"`)));
+      const right = r.chance(0.5), mark = onColor(house);
+      return mk(180, 80, rect(0, 0, 180, 80, house, `rx="40"`) + circ(right ? 140 : 40, 40, 30, on(house, c)) + (right ? rect(30, 30, 20, 20, mark, `rx="3"`) : rect(136, 26, 8, 28, mark, `rx="3"`)));
     }
     case "led": {
       const k = r.int(3, 5), lit = r.int(0, k - 1), W = 44 + (k - 1) * 36;
       let b = rect(0, 0, W, 44, deep, `rx="22"`);
       for (let i = 0; i < k; i++) {
         const cx = 22 + i * 36;
-        b += i === lit || r.chance(0.2) ? circ(cx, 22, 16, c, `opacity="0.3"`) + circ(cx, 22, 10, c) : circ(cx, 22, 10, house);
+        // Unlit LEDs are rings when lit and unlit would share a color.
+        b += i === lit || r.chance(0.2) ? circ(cx, 22, 16, c, `opacity="0.3"`) + circ(cx, 22, 10, c)
+          : flat ? circ(cx, 22, 9, "none", `stroke="${house}" stroke-width="3"`) : circ(cx, 22, 10, house);
       }
       return mk(W, 64, b + text(4, 62, o.label ?? r.pick(["PWR", "SYS", "LNK", "RDY", "A1"]), { size: 13, fill: house, weight: 700 }));
     }
@@ -745,7 +770,7 @@ export function button(o: Base & { variant?: "key" | "toggle" | "led" | "plus" |
       // Thick rounded frame around nested squares (the orange frame on the SMG sheet).
       const c2 = hues.length > 1 ? r.pick(hues.filter(h => h !== c)) : p.muted;
       const l1 = hues.length ? mix(c, "#FFFFFF", 0.78) : p.bg, l2 = hues.length ? mix(c2, "#FFFFFF", 0.5) : p.muted;
-      return mk(150, 132, rect(6, 6, 138, 120, "none", `stroke="${c}" stroke-width="12" rx="22"`) + rect(42, 33, 66, 66, l1) + rect(49, 40, 52, 52, l2) + rect(59, 50, 32, 32, p.fg, `rx="3"`));
+      return mk(150, 132, rect(6, 6, 138, 120, "none", `stroke="${c}" stroke-width="12" rx="22"`) + rect(42, 33, 66, 66, l1) + rect(49, 40, 52, 52, l2) + rect(59, 50, 32, 32, on(l2, p.fg), `rx="3"`));
     }
   }
 }
@@ -754,14 +779,19 @@ export function button(o: Base & { variant?: "key" | "toggle" | "led" | "plus" |
 export function tileGroup(o: Base & { cols?: number; rows?: number; cell?: number } = {}): Decal {
   const r = rng(o.seed ?? 1), p = pal(o.palette), cols = o.cols ?? 2, rows = o.rows ?? r.int(2, 3), c = o.cell ?? 120;
   const hues = p.accents.filter(saturated), fills = hues.length ? hues : [p.fg, p.muted];
+  const on = Array.from({ length: rows }, (_, j) => Array.from({ length: cols }, (_, i) => !(i || j) || r.chance(0.8)));
   let b = "", last = "";
   for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) {
-    if ((i || j) && !r.chance(0.8)) continue;
+    if (!on[j][i]) continue;
     let fill = r.pick(fills);
     if (fill === last && fills.length > 1) fill = fills[(fills.indexOf(fill) + 1) % fills.length];
     last = fill;
     const x = i * c, y = j * c, ink = onColor(fill), what = r.pick(["code", "mark", "ring", "num", "none"] as const);
-    b += rect(x, y, c, c, fill);
+    // One shape per tile that reaches 2px under its right and lower neighbours, so anti-aliasing leaves no grey seams in masks.
+    const ex = on[j][i + 1] ? 2 : 0, ey = on[j + 1]?.[i] ? 2 : 0;
+    b += ex && ey && !on[j + 1][i + 1]
+      ? poly([[x, y], [x + c + ex, y], [x + c + ex, y + c], [x + c, y + c], [x + c, y + c + ey], [x, y + c + ey]], fill)
+      : rect(x, y, c + ex, c + ey, fill);
     if (what === "code") b += rect(x + c * 0.1, y + c * 0.06, c * 0.3, c * 0.05, ink) + text(x + c * 0.08, y + c * 0.9, `${str(r, L, 1)}${str(r, "nqrbe", 1)}`, { size: c * 0.66, fill: ink, font: "grotesk", weight: 500, width: c * 0.8 });
     if (what === "mark") b += place(blockMark({ seed: r.int(1, 1e6), grid: 5, color: ink }), x + c * 0.2, y + c * 0.2, c * 0.6, c * 0.6);
     if (what === "ring") b += place(icon({ name: r.pick(["ring", "peanut", "circle", "pill"] as const), color: ink, ground: fill }), x + c * 0.12, y + c * 0.12, c * 0.76, c * 0.76);
@@ -1099,7 +1129,7 @@ function bandsSheet(o: SheetOpts, r: Rng): Decal {
   const colorBand = (pill: boolean) => {
     const h = pill ? 104 : 112, fill = mix(hue(1), "#000000", 0.18);
     const ink = hues.length > 2 && contrast(hue(2), fill) >= 1.15 ? hue(2) : onColor(fill);
-    return { h, body: repeatBand({ word: word(), sep: "-", w: W, h, fill, color: ink, sepColor: hue(0), weight: 600, pill }).body };
+    return { h, body: repeatBand({ word: word(), sep: "-", w: W, h, fill, color: ink, sepColor: contrast(hue(0), fill) < 2 ? ink : hue(0), weight: 600, pill }).body };
   };
   const bands: Record<string, () => { h: number; body: string }> = {
     thin: () => ({ h: 96, body: repeatBand({ word: word(), sep: "  ", w: W, h: 96, fill: ground, color: light, weight: 400 }).body + rect(0, 88, W, 8, mix(ground, p.fg, 0.12)) }),
@@ -1123,7 +1153,7 @@ function bandsSheet(o: SheetOpts, r: Rng): Decal {
       return { h, body: place(tape({ seed: seed(), w: W * 0.56, h, color: c }), W * 0.04, 0, W * 0.56, h) + place(tape({ seed: seed(), w: W * 0.3, h, color: c }), W * 0.66, 0, W * 0.3, h) };
     },
     comb: () => {
-      const k = 10, step = W / k, fill = mix(p.fg, p.bg, 0.1), bar = mix(p.bg, p.fg, 0.33);
+      const k = 10, step = W / k, fill = mix(p.fg, p.bg, 0.1), bar = mix(p.bg, p.fg, 0.5);
       let body = "";
       for (let i = 0; i < k; i++) { const cx = step * (i + 0.5); body += rect(cx - 9, 0, 18, 30, fill) + rect(cx - 56, 30, 112, 34, fill); }
       for (let x = step * 2.2; x < W - 40; x += step * 2.5) body += rect(x, 96, 16, 70, bar) + rect(x + 24, 96, 16, 70, bar);
